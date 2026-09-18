@@ -1,0 +1,66 @@
+name: Build Harbor AArch64
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Harbor version to build (e.g. v2.14.0). Use "latest" to build the latest release.'
+        required: true
+        type: string
+        default: 'latest'
+
+jobs:
+  build-harbor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve Harbor version
+        id: version
+        run: |
+          echo "github.sha = $GITHUB_SHA"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          # If input is "latest", fetch the latest release tag from the Harbor repo
+          if [ "${INPUT_VERSION}" = "latest" ]; then
+            echo "Fetching latest Harbor release version..."
+            INPUT_VERSION=$(curl -s "https://api.github.com/repos/goharbor/harbor/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+            echo "Latest version fetched: ${INPUT_VERSION}"
+          fi
+          echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Harbor version: ${INPUT_VERSION}"
+
+      - name: Validate Harbor version format
+        env:
+          HARBOR_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "Validating version format for: ${HARBOR_VERSION}"
+          if [[ ! "${HARBOR_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid Harbor version format '${HARBOR_VERSION}'. Expected format like v2.14.0"
+            exit 1
+          fi
+          echo "Version format is valid: ${HARBOR_VERSION}"
+
+      - name: Build a container image
+        env:
+          Harbor_Git_Tag: ${{ steps.version.outputs.version }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          bash build-harbor-aarch64.sh
+          docker images
+          mkdir all-in-one/harbor
+          docker save $(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^goharbor/"| grep "\-aarch64") | gzip > all-in-one/harbor/harbor.${Harbor_Git_Tag}.tar.gz
+          curl -L https://raw.githubusercontent.com/vmware/harbor/${Harbor_Git_Tag}/LICENSE -o all-in-one/harbor/LICENSE
+          curl -L https://raw.githubusercontent.com/vmware/harbor/${Harbor_Git_Tag}/make/common.sh -o all-in-one/harbor/common.sh
+          curl -L https://raw.githubusercontent.com/vmware/harbor/${Harbor_Git_Tag}/make/harbor.yml.tmpl -o all-in-one/harbor/harbor.yml.tmpl
+          curl -L https://raw.githubusercontent.com/vmware/harbor/${Harbor_Git_Tag}/make/install.sh -o all-in-one/harbor/install.sh
+          curl -L https://raw.githubusercontent.com/vmware/harbor/${Harbor_Git_Tag}/make/prepare -o all-in-one/harbor/prepare
+          sed -i "s#goharbor/prepare:dev#goharbor/prepare:${Harbor_Git_Tag}-aarch64#g" all-in-one/harbor/prepare
+          cd all-in-one
+          chmod +x harbor/prepare harbor/install.sh
+          tar zcf harbor-offline-installer-aarch64.tgz harbor
+          rm -rf harbor
+          docker build -t harbor.jototech.cn/harbor/harbor_images_aarch64:${Harbor_Git_Tag} .
+          docker login -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}
+          docker push harbor.jototech.cn/harbor/harbor_images_aarch64:${Harbor_Git_Tag}
