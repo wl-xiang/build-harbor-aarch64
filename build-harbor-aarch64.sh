@@ -1,4 +1,10 @@
-GIT_BRANCH="v2.14.0"
+# Version to build. Takes GIT_BRANCH if explicitly provided, otherwise falls
+# back to the workflow-injected Harbor_Git_Tag (the user's resolved version),
+# and finally to a sane default.
+if [ -z "${GIT_BRANCH:-}" ]; then
+  GIT_BRANCH="${Harbor_Git_Tag:-v2.14.0}"
+fi
+echo "Building Harbor version: ${GIT_BRANCH}"
 
 # first step: clone harbor ARM code
 git clone https://github.com/alanpeng/harbor-arm.git
